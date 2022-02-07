@@ -9,6 +9,7 @@ import typing
 from abc import ABC
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
+import betterproto
 from dateutil.parser import isoparse
 from typing import (
     Any,
@@ -680,6 +681,11 @@ class Message(ABC):
         ]
         return f"{self.__class__.__name__}({', '.join(parts)})"
 
+    def __str__(self) -> str:
+        if self._betterproto.sorted_field_names == ("value",):
+            return f"{self.__class__.__name__}({self.value})"
+        return self.__repr__()
+
     def __getattribute__(self, name: str) -> Any:
         """
         Lazily initialize default values to avoid infinite recursion for recursive
@@ -858,7 +864,10 @@ class Message(ABC):
         return field_cls
 
     def _get_field_default(self, field_name: str) -> Any:
-        return self._betterproto.default_gen[field_name]()
+        try:
+            return self._betterproto.default_gen[field_name]()
+        except TypeError:
+            return self._betterproto.default_gen[field_name]
 
     @classmethod
     def _get_field_default_gen(cls, field: dataclasses.Field) -> Any:
@@ -878,9 +887,9 @@ class Message(ABC):
                 return type(None)
             else:
                 return t
-        elif issubclass(t, Enum):
+        #elif issubclass(t, Enum):
             # Enums always default to zero.
-            return int
+            #return int
         elif t is datetime:
             # Offsets are relative to 1970-01-01T00:00:00Z
             return datetime_default_gen
@@ -905,6 +914,9 @@ class Message(ABC):
             elif meta.proto_type == TYPE_BOOL:
                 # Booleans use a varint encoding, so convert it to true/false.
                 value = value > 0
+            elif meta.proto_type == TYPE_ENUM:
+                cls = self._betterproto.cls_by_field[field_name]
+                value = cls(value)
         elif wire_type in (WIRE_FIXED_32, WIRE_FIXED_64):
             fmt = _pack_fmt(meta.proto_type)
             value = struct.unpack(fmt, value)[0]
@@ -1180,8 +1192,8 @@ class Message(ABC):
             if value[key] is not None:
                 if meta.proto_type == TYPE_MESSAGE:
                     v = getattr(self, field_name)
-                    cls = self._betterproto.cls_by_field[field_name]
                     if isinstance(v, list):
+                        cls = self._betterproto.cls_by_field[field_name]
                         if cls == datetime:
                             v = [isoparse(item) for item in value[key]]
                         elif cls == timedelta:
@@ -1191,15 +1203,16 @@ class Message(ABC):
                             ]
                         else:
                             v = [cls().from_dict(item) for item in value[key]]
-                    elif cls == datetime:
+                    elif isinstance(v, datetime):
                         v = isoparse(value[key])
                         setattr(self, field_name, v)
-                    elif cls == timedelta:
+                    elif isinstance(v, timedelta):
                         v = timedelta(seconds=float(value[key][:-1]))
                         setattr(self, field_name, v)
                     elif meta.wraps:
                         setattr(self, field_name, value[key])
                     elif v is None:
+                        cls = self._betterproto.cls_by_field[field_name]
                         setattr(self, field_name, cls().from_dict(value[key]))
                     else:
                         # NOTE: `from_dict` mutates the underlying message, so no
@@ -1279,6 +1292,30 @@ class Message(ABC):
         """
         return self.from_dict(json.loads(value))
 
+
+class StringMessage(Message, str):
+    
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}({self.value})"
+
+class FloatMessage(Message, float):
+    ...
+
+class IntMessage(Message, int):
+    ...
+
+class BoolMessage(Message, int):
+    
+    def __bool__(self) -> bool:
+        if self.value == 0:
+            return False
+        return True
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}({bool(self.value)})"
+
+class BytesMessage(Message, bytes):
+    ...
 
 def serialized_on_wire(message: Message) -> bool:
     """

@@ -1,7 +1,9 @@
+import betterproto
 from betterproto.lib.google.protobuf import (
     DescriptorProto,
     EnumDescriptorProto,
     FieldDescriptorProto,
+    FieldDescriptorProtoType,
     FileDescriptorProto,
     ServiceDescriptorProto,
 )
@@ -28,6 +30,11 @@ from .models import (
     ServiceMethodCompiler,
     is_map,
     is_oneof,
+    PROTO_BOOL_TYPES,
+    PROTO_BYTES_TYPES,
+    PROTO_FLOAT_TYPES,
+    PROTO_INT_TYPES,
+    PROTO_STR_TYPES
 )
 
 if TYPE_CHECKING:
@@ -148,9 +155,31 @@ def read_protobuf_type(
         if item.options.map_entry:
             # Skip generated map entry messages since we just use dicts
             return
+        is_primitive_type = len(item.field) == 1 and item.field[0].name == "value"
+        if is_primitive_type:
+            primitive_type = item.field[0].type
+            if primitive_type in PROTO_INT_TYPES:
+                message_type = betterproto.IntMessage
+            elif primitive_type in PROTO_FLOAT_TYPES:
+                message_type = betterproto.FloatMessage
+            elif primitive_type in PROTO_BOOL_TYPES:
+                message_type = betterproto.BoolMessage
+            elif primitive_type in PROTO_BYTES_TYPES:
+                message_type = betterproto.BytesMessage
+            elif primitive_type in PROTO_STR_TYPES:
+                message_type = betterproto.StringMessage
+            else:
+                message_type = betterproto.Message
+        else:
+            message_type = betterproto.Message
         # Process Message
         message_data = MessageCompiler(
-            source_file=source_file, parent=output_package, proto_obj=item, path=path
+            source_file=source_file, 
+            parent=output_package, 
+            proto_obj=item, 
+            path=path, 
+            primitive=is_primitive_type,
+            message_type=f"{message_type.__module__}.{message_type.__name__}"
         )
         for index, field in enumerate(item.field):
             if is_map(field, item):

@@ -121,5 +121,9 @@ commands =
 """
 
 [build-system]
-requires = ["poetry-core>=1.0.0,<2"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta:__legacy__"
+
+#[build-system]
+#requires = ["poetry-core>=1.0.0,<2"]
+#build-backend = "poetry.core.masonry.api"
