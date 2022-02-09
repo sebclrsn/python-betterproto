@@ -30,10 +30,18 @@ reference to `A` to `B`'s `fields` attribute.
 """
 
 
+
+
 import builtins
+import re
+import textwrap
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, Iterator, List, Optional, Set, Type, Union
+
 import betterproto
 from betterproto import which_one_of
 from betterproto.casing import sanitize_name
+from betterproto.compile.importing import get_type_reference, parse_source_type_name
 from betterproto.compile.importing import (
     get_type_reference,
     parse_source_type_name,
@@ -41,7 +49,6 @@ from betterproto.compile.importing import (
 from betterproto.compile.naming import (
     pythonize_class_name,
     pythonize_field_name,
-    pythonize_method_name,
 )
 from betterproto.lib.google.protobuf import (
     DescriptorProto,
@@ -50,7 +57,10 @@ from betterproto.lib.google.protobuf import (
     MethodDescriptorProto,
     Field,
     FieldDescriptorProto,
+    FieldDescriptorProtoLabel,
     FieldDescriptorProtoType,
+    FileDescriptorProto,
+    MethodDescriptorProto,
     FieldDescriptorProtoLabel,
 )
 from betterproto.lib.google.protobuf.compiler import CodeGeneratorRequest
@@ -147,17 +157,13 @@ def get_comment(
                 sci_loc.leading_comments.strip().replace("\n", ""), width=79 - indent
             )
 
-            if path[-2] == 2 and path[-4] != 6:
-                # This is a field
-                return f"{pad}# " + f"\n{pad}# ".join(lines)
+            # This is a field, message, enum, service, or method
+            if len(lines) == 1 and len(lines[0]) < 79 - indent - 6:
+                lines[0] = lines[0].strip('"')
+                return f'{pad}"""{lines[0]}"""'
             else:
-                # This is a message, enum, service, or method
-                if len(lines) == 1 and len(lines[0]) < 79 - indent - 6:
-                    lines[0] = lines[0].strip('"')
-                    return f'{pad}"""{lines[0]}"""'
-                else:
-                    joined = f"\n{pad}".join(lines)
-                    return f'{pad}"""\n{pad}{joined}\n{pad}"""'
+                joined = f"\n{pad}".join(lines)
+                return f'{pad}"""\n{pad}{joined}\n{pad}"""'
 
     return ""
 
@@ -285,7 +291,6 @@ class MessageCompiler(ProtoContentBase):
     fields: List[Union["FieldCompiler", "MessageCompiler"]] = field(
         default_factory=list
     )
-    primitive: bool = False
     message_type: betterproto.Message = betterproto.Message
     deprecated: bool = field(default=False, init=False)
     builtins_types: Set[str] = field(default_factory=set)
@@ -531,7 +536,7 @@ class FieldCompiler(MessageCompiler):
                 source_type=self.proto_obj.type_name,
             )
         else:
-            raise NotImplementedError(f"Unknown type {field.type}")
+            raise NotImplementedError(f"Unknown type {self.proto_obj.type}")
 
     @property
     def annotation(self) -> str:
@@ -677,12 +682,8 @@ class ServiceMethodCompiler(ProtoContentBase):
         self.parent.methods.append(self)
 
         # Check for imports
-        if self.py_input_message:
-            for f in self.py_input_message.fields:
-                f.add_imports_to(self.output_file)
         if "Optional" in self.py_output_message_type:
             self.output_file.typing_imports.add("Optional")
-        self.mutable_default_args  # ensure this is called before rendering
 
         # Check for Async imports
         if self.client_streaming:
@@ -695,37 +696,6 @@ class ServiceMethodCompiler(ProtoContentBase):
             self.output_file.typing_imports.add("AsyncIterator")
 
         super().__post_init__()  # check for unset fields
-
-    @property
-    def mutable_default_args(self) -> Dict[str, str]:
-        """Handle mutable default arguments.
-
-        Returns a list of tuples containing the name and default value
-        for arguments to this message who's default value is mutable.
-        The defaults are swapped out for None and replaced back inside
-        the method's body.
-        Reference:
-        https://docs.python-guide.org/writing/gotchas/#mutable-default-arguments
-
-        Returns
-        -------
-        Dict[str, str]
-            Name and actual default value (as a string)
-            for each argument with mutable default values.
-        """
-        mutable_default_args = {}
-
-        if self.py_input_message:
-            for f in self.py_input_message.fields:
-                if (
-                    not self.client_streaming
-                    and f.default_value_string != "None"
-                    and f.mutable
-                ):
-                    mutable_default_args[f.py_name] = f.default_value_string
-                    self.output_file.typing_imports.add("Optional")
-
-        return mutable_default_args
 
     @property
     def py_name(self) -> str:
@@ -767,6 +737,16 @@ class ServiceMethodCompiler(ProtoContentBase):
             ):
                 return msg
         return None
+
+    @property
+    def py_input_message_param(self) -> str:
+        """Param name corresponding to py_input_message_type.
+        Returns
+        -------
+        str
+            Param name corresponding to py_input_message_type.
+        """
+        return pythonize_field_name(self.py_input_message_type)
 
     @property
     def py_input_message_type(self) -> str:

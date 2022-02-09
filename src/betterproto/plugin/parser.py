@@ -177,8 +177,7 @@ def read_protobuf_type(
             source_file=source_file, 
             parent=output_package, 
             proto_obj=item, 
-            path=path, 
-            primitive=is_primitive_type,
+            path=path,
             message_type=f"{message_type.__module__}.{message_type.__name__}"
         )
         for index, field in enumerate(item.field):
