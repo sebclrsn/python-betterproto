@@ -6,10 +6,13 @@ import math
 import struct
 import sys
 import typing
+import builtins
+import functools
 from abc import ABC
 from base64 import b64decode, b64encode
 from datetime import datetime, timedelta, timezone
 from dateutil.parser import isoparse
+from types import MethodDescriptorType
 from typing import (
     Any,
     Callable,
@@ -592,7 +595,7 @@ class ProtoClassMetadata:
         return field_cls
 
 
-class Message(ABC):
+class Message:
     """
     The base class for protobuf messages, all generated messages will inherit from
     this. This class registers the message fields which are used by the serializers and
@@ -1290,19 +1293,47 @@ class Message(ABC):
         """
         return self.from_dict(json.loads(value))
 
+def wrap_builtin(method):
 
-class StringMessage(Message, str):
-    
+    @functools.wraps(method)
+    def wrapped(*args, **kwargs):
+        self = args[0]
+        ret = method(*args, **kwargs)
+        return self.__class__(ret)
+
+    return wrapped
+
+class PrimitiveMessageMeta(type):
+
+    def __new__(metacls, name, bases, namespace):
+        builtin_base = [base for base in bases[0].__bases__ if hasattr(builtins, base.__name__)]
+        if not builtin_base:
+            return type.__new__(metacls, name, bases, namespace)
+        new_namespace = namespace
+        builtin_base = builtin_base[0]
+        for attr_name, attribute in builtin_base.__dict__.items():
+            # find the builtin methods of the builtin base
+            if isinstance(attribute, MethodDescriptorType) and not attr_name.startswith("__"):
+                # replace them with a wrapped version to return a Message
+                attribute = wrap_builtin(attribute)
+                new_namespace[attr_name] = attribute
+        return type.__new__(metacls, name, bases, new_namespace)
+
+class StringMessage(Message, str, metaclass=PrimitiveMessageMeta):
+
     def __str__(self) -> str:
-        return f"{self.__class__.__name__}({self.value})"
+        return f"{self.__class__.__name__}('{self.value}')"
 
-class FloatMessage(Message, float):
+class BytesMessage(Message, bytes, metaclass=PrimitiveMessageMeta):
     ...
 
-class IntMessage(Message, int):
+class FloatMessage(Message, float, metaclass=PrimitiveMessageMeta):
     ...
 
-class BoolMessage(Message, int):
+class IntMessage(Message, int, metaclass=PrimitiveMessageMeta):
+    ...
+
+class BoolMessage(Message, int, metaclass=PrimitiveMessageMeta):
     
     def __bool__(self) -> bool:
         if self.value == 0:
@@ -1312,8 +1343,6 @@ class BoolMessage(Message, int):
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({bool(self.value)})"
 
-class BytesMessage(Message, bytes):
-    ...
 
 def serialized_on_wire(message: Message) -> bool:
     """
